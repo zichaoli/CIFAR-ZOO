@@ -30,10 +30,13 @@ This repository contains the pytorch code for multiple CNN architectures and imp
 
 ### Requirements
 
-- Python (3.6)
-- PyTorch (1.0.0)
-- TensorFlow/Tensorboard (if you want to use the tensorboard for **visualization**)
-- Other dependencies (pyyaml, easydict, tensorboardX >= 1.8)
+- Python (**>=3.6**)
+- PyTorch (**>=1.1.0**)
+- Tensorboard(**>=1.4.0**) (for ***visualization***)
+- Other dependencies (pyyaml, easydict)
+
+PS: for TensorboardX version, check  tag [pt1.0](https://github.com/BIGBALLON/CIFAR-ZOO/releases/tag/pt1.0)
+
 
 ```bash
 pip install -r requirements.txt
