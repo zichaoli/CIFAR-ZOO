@@ -148,3 +148,16 @@ Provided codes were adapted from
 
 Feel free to contact me if you have any suggestions or questions, issues are welcome,   
 create a PR if you find any bugs or you want to contribute. :blush:     
+
+
+
+## Citation
+
+```
+@misc{bigballon2019cifarzoo,
+  author = {Wei Li},
+  title = {CIFAR-ZOO: PyTorch implementation of CNNs for CIFAR dataset},
+  howpublished = {\url{https://github.com/BIGBALLON/CIFAR-ZOO}},
+  year = {2019}
+}
+```
