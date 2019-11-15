@@ -12,35 +12,48 @@ from torch.utils.tensorboard import SummaryWriter
 
 from easydict import EasyDict
 from models import *
+from update_noise import Layer_loss, Conv, update_grad
 
 from utils import Logger, count_parameters, data_augmentation, \
     load_checkpoint, get_data_loader, mixup_data, mixup_criterion, \
     save_checkpoint, adjust_learning_rate, get_current_lr
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR Dataset Training')
-parser.add_argument('--work-path', required=True, type=str)
+parser.add_argument('--work_path', required=True, type=str)
 parser.add_argument('--resume', action='store_true',
                     help='resume from checkpoint')
+parser.add_argument('--lam', type=float, default=0.9)
 
 args = parser.parse_args()
 logger = Logger(log_file_name=args.work_path + '/log.txt',
                 log_level=logging.DEBUG, logger_name="CIFAR").get_log()
 
 
-def train(train_loader, net, criterion, optimizer, epoch, device):
+
+def train(train_loader, net, criterion, optimizer, epoch, device,\
+          layer_inputs, layer_outputs, grad_inputs, grad_outputs, layers, crit):
     global writer
 
     start = time.time()
     net.train()
 
+
+
     train_loss = 0
     correct = 0
     total = 0
+    eps = 0.001
+    lam = 0.5
     logger.info(" === Epoch: [{}/{}] === ".format(epoch + 1, config.epochs))
 
     for batch_index, (inputs, targets) in enumerate(train_loader):
         # move tensor to GPU
         inputs, targets = inputs.to(device), targets.to(device)
+        inputs.requires_grad = True
+        layer_inputs.clear()
+        layer_outputs.clear()
+        grad_inputs.clear()
+        grad_outputs.clear()
         if config.mixup:
             inputs, targets_a, targets_b, lam = mixup_data(
                 inputs, targets, config.mixup_alpha, device)
@@ -56,11 +69,23 @@ def train(train_loader, net, criterion, optimizer, epoch, device):
         optimizer.zero_grad()
         # backward
         loss.backward()
-        # update weight
+
+#fgsm
+        # for p in net.parameters():
+        #     p.grad *= lam
+        # adv_input = inputs + eps * inputs.grad.sign()
+        #
+        # outputs = net(adv_input)
+        #
+        # loss_2 = (1-lam) * criterion(outputs, targets)
+        # loss_2.backward()
+#
+        layer_loss = update_grad(net, layer_inputs, layer_outputs, grad_inputs, grad_outputs, layers, crit, args.lam)
+
         optimizer.step()
 
         # count the loss and acc
-        train_loss += loss.item()
+        train_loss += args.lam*loss.item() + layer_loss
         _, predicted = outputs.max(1)
         total += targets.size(0)
         if config.mixup:
@@ -89,7 +114,8 @@ def train(train_loader, net, criterion, optimizer, epoch, device):
     return train_loss, train_acc
 
 
-def test(test_loader, net, criterion, optimizer, epoch, device):
+def test(test_loader, net, criterion, optimizer, epoch, device,\
+         layer_inputs, layer_outputs, grad_inputs, grad_outputs):
     global best_prec, writer
 
     net.eval()
@@ -103,6 +129,10 @@ def test(test_loader, net, criterion, optimizer, epoch, device):
     with torch.no_grad():
         for batch_index, (inputs, targets) in enumerate(test_loader):
             inputs, targets = inputs.to(device), targets.to(device)
+            layer_inputs.clear()
+            layer_outputs.clear()
+            grad_inputs.clear()
+            grad_outputs.clear()
             outputs = net(inputs)
             loss = criterion(outputs, targets)
 
@@ -155,6 +185,42 @@ def main():
         cudnn.benchmark = True
 
     net.to(device)
+#smart noise
+    layer_inputs = []
+    layer_outputs = []
+    grad_inputs = []
+    grad_outputs = []
+
+    def forward_hook(module, input, output):
+        layer_inputs.append(input[0].detach())
+        layer_outputs.append(output.detach())
+
+    def backward_hook(module, grad_input, grad_output):
+        grad_inputs.append(grad_input[0].detach())
+        grad_outputs.append(grad_output[0].detach())
+
+    def input_hook(grad):
+        grad_inputs.append(grad)
+
+    def output_hook(grad):
+        grad_outputs.append(grad)
+
+    for p in net.modules():
+        if isinstance(p, nn.Conv2d):
+            p.register_forward_hook(forward_hook)
+            p.register_backward_hook(backward_hook)
+    layers = []
+    for p in net.modules():
+        if isinstance(p, nn.Conv2d):
+            in_planes = p.in_channels
+            planes = p.out_channels
+            kernel_size = p.kernel_size[0]
+            padding = p.padding[0]
+            stride = p.stride[0]
+
+            layer = Conv(in_planes, planes, kernel_size, stride, padding)
+            layers.append(layer)
+    crit = Layer_loss()
 
     # define loss and optimizer
     criterion = nn.CrossEntropyLoss()
@@ -188,10 +254,12 @@ def main():
     for epoch in range(last_epoch + 1, config.epochs):
         lr = adjust_learning_rate(optimizer, epoch, config)
         writer.add_scalar('learning_rate', lr, epoch)
-        train(train_loader, net, criterion, optimizer, epoch, device)
+        train(train_loader, net, criterion, optimizer, epoch, device,\
+              layer_inputs, layer_outputs, grad_inputs, grad_outputs, layers, crit)
         if epoch == 0 or (
                 epoch + 1) % config.eval_freq == 0 or epoch == config.epochs - 1:
-            test(test_loader, net, criterion, optimizer, epoch, device)
+            test(test_loader, net, criterion, optimizer, epoch, device,\
+                 layer_inputs, layer_outputs, grad_inputs, grad_outputs)
     writer.close()
     logger.info(
         "======== Training Finished.   best_test_acc: {:.3f}% ========".format(best_prec))
