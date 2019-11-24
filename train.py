@@ -12,7 +12,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 from easydict import EasyDict
 from models import *
-from update_noise import Layer_loss, Conv, update_grad
+from update_noise import Layer_loss, Conv, update_grad, Conv1, BasicGroup, group_noise
+from models.resnet import BasicBlock
+import copy
 
 from utils import Logger, count_parameters, data_augmentation, \
     load_checkpoint, get_data_loader, mixup_data, mixup_criterion, \
@@ -22,7 +24,8 @@ parser = argparse.ArgumentParser(description='PyTorch CIFAR Dataset Training')
 parser.add_argument('--work_path', required=True, type=str)
 parser.add_argument('--resume', action='store_true',
                     help='resume from checkpoint')
-parser.add_argument('--lam', type=float, default=0.9)
+parser.add_argument('--alpha', type=float, default=0.9)
+parser.add_argument('--mults', type=float, default=2)
 
 args = parser.parse_args()
 logger = Logger(log_file_name=args.work_path + '/log.txt',
@@ -31,7 +34,7 @@ logger = Logger(log_file_name=args.work_path + '/log.txt',
 
 
 def train(train_loader, net, criterion, optimizer, epoch, device,\
-          layer_inputs, layer_outputs, grad_inputs, grad_outputs, layers, crit):
+          layer_inputs, layer_outputs, grad_inputs, grad_outputs, layers, crit, groups):
     global writer
 
     start = time.time()
@@ -43,7 +46,6 @@ def train(train_loader, net, criterion, optimizer, epoch, device,\
     correct = 0
     total = 0
     eps = 0.001
-    lam = 0.5
     logger.info(" === Epoch: [{}/{}] === ".format(epoch + 1, config.epochs))
 
     for batch_index, (inputs, targets) in enumerate(train_loader):
@@ -72,20 +74,20 @@ def train(train_loader, net, criterion, optimizer, epoch, device,\
 
 #fgsm
         # for p in net.parameters():
-        #     p.grad *= lam
+        #     p.grad *= args.alpha
         # adv_input = inputs + eps * inputs.grad.sign()
         #
         # outputs = net(adv_input)
         #
-        # loss_2 = (1-lam) * criterion(outputs, targets)
+        # loss_2 = (1-args.alpha) * criterion(outputs, targets)
         # loss_2.backward()
-#
-        layer_loss = update_grad(net, layer_inputs, layer_outputs, grad_inputs, grad_outputs, layers, crit, args.lam)
 
+        # layer_loss = update_grad(net, layer_inputs, layer_outputs, grad_inputs, grad_outputs, layers, crit, args.alpha)
+        layer_loss = group_noise(net, groups, crit, args.alpha)
         optimizer.step()
 
         # count the loss and acc
-        train_loss += args.lam*loss.item() + layer_loss
+        train_loss += args.alpha * loss.item() + (1 - args.alpha)*layer_loss
         _, predicted = outputs.max(1)
         total += targets.size(0)
         if config.mixup:
@@ -186,6 +188,7 @@ def main():
 
     net.to(device)
 #smart noise
+
     layer_inputs = []
     layer_outputs = []
     grad_inputs = []
@@ -205,24 +208,48 @@ def main():
     def output_hook(grad):
         grad_outputs.append(grad)
 
-    for p in net.modules():
-        if isinstance(p, nn.Conv2d):
-            p.register_forward_hook(forward_hook)
-            p.register_backward_hook(backward_hook)
+    # for p in net.modules():
+    #     if isinstance(p, nn.Conv2d):
+    #         p.register_forward_hook(forward_hook)
+    #         p.register_backward_hook(backward_hook)
     layers = []
+    index = 0
+    # for p in net.modules():
+    #     if isinstance(p, nn.Conv2d):
+    #         in_planes = p.in_channels
+    #         planes = p.out_channels
+    #         kernel_size = p.kernel_size[0]
+    #         padding = p.padding[0]
+    #         stride = p.stride[0]
+    #         # if index ==0:
+    #         #     layer = Conv1(in_planes, planes, kernel_size, stride, padding)
+    #         # else:
+    #         layer = Conv(in_planes, planes, kernel_size, stride, padding)
+    #         layers.append(layer)
+    #         index +=1
+    groups = []
+    group_index = 0
+    mults = 1
+    index_list = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
     for p in net.modules():
-        if isinstance(p, nn.Conv2d):
-            in_planes = p.in_channels
-            planes = p.out_channels
-            kernel_size = p.kernel_size[0]
-            padding = p.padding[0]
-            stride = p.stride[0]
-
-            layer = Conv(in_planes, planes, kernel_size, stride, padding)
-            layers.append(layer)
+        if isinstance(p, BasicBlock):
+            # group.load_state_dict(p.state_dict())
+            # group.load_state_dict(p.state_dict())
+            downsample = None
+            if p.downsample is not None:
+                downsample = copy.deepcopy(p.downsample)
+            #     tmp = copy.deepcopy(p.downsample)
+            group = BasicGroup(p.conv_1.in_channels, p.conv_1.out_channels, stride=p.stride, downsample=downsample)
+            group.to(device)
+            if group_index in index_list:
+                mults *= 2
+            group.eps *= mults
+            groups.append(group)
+            group_index += 1
+            # print('yes')
     crit = Layer_loss()
 
-    # define loss and optimizer
+# define loss and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
         net.parameters(),
@@ -255,7 +282,7 @@ def main():
         lr = adjust_learning_rate(optimizer, epoch, config)
         writer.add_scalar('learning_rate', lr, epoch)
         train(train_loader, net, criterion, optimizer, epoch, device,\
-              layer_inputs, layer_outputs, grad_inputs, grad_outputs, layers, crit)
+              layer_inputs, layer_outputs, grad_inputs, grad_outputs, layers, crit, groups)
         if epoch == 0 or (
                 epoch + 1) % config.eval_freq == 0 or epoch == config.epochs - 1:
             test(test_loader, net, criterion, optimizer, epoch, device,\

@@ -24,10 +24,18 @@ class BasicBlock(nn.Module):
         self.bn_2 = nn.BatchNorm2d(planes)
         self.downsample = downsample
         self.stride = stride
+        self.info = {}
+
+    def input_hook(self, grad):
+        self.info['input_grad'] = grad.detach()
+    def output_hook(self, grad):
+        self.info['output_grad'] = grad.detach()
 
     def forward(self, x):
+        if x.requires_grad == True:
+            x.register_hook(self.input_hook)
         residual = x
-
+        self.info['input'] = x.detach()
         out = self.conv_1(x)
         out = self.bn_1(out)
         out = self.relu(out)
@@ -39,6 +47,9 @@ class BasicBlock(nn.Module):
             residual = self.downsample(x)
 
         out += residual
+        if out.requires_grad == True:
+            out.register_hook(self.output_hook)
+        self.info['output'] = out.detach()
         out = self.relu(out)
 
         return out
@@ -59,9 +70,19 @@ class Bottleneck(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
+        self.info = {}
+
+    def input_hook(self, grad):
+        self.info['input_grad'] = grad.detach()
+    def output_hook(self, grad):
+        self.info['output_grad'] = grad.detach()
+
 
     def forward(self, x):
+        x.register_hook(self.input_hook)
         residual = x
+        self.info['input'] = x.detach()
+
 
         out = self.conv_1(x)
         out = self.bn_1(out)
@@ -78,6 +99,8 @@ class Bottleneck(nn.Module):
             residual = self.downsample(x)
 
         out += residual
+        out.register_hook(self.output_hook)
+        self.info['output'] = out.detach()
         out = self.relu(out)
 
         return out

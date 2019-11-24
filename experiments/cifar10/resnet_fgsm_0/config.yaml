@@ -1,10 +1,10 @@
 # net architecture
-architecture: resnet20
+architecture: resnet110
 
 # log and checkpoint
 data_path: ./data
 ckpt_path: ./
-ckpt_name: resnet20
+ckpt_name: resnet110
 
 # datasets
 num_classes: 10
